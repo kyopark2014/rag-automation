@@ -31,7 +31,7 @@ def load_config():
         session = boto3.Session()
         region = session.region_name
         config['region'] = region
-        config['projectName'] = "ds-project"
+        config['projectName'] = "rag-automation"
         
         sts = boto3.client("sts")
         response = sts.get_caller_identity()
