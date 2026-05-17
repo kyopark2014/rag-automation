@@ -1,4 +1,4 @@
-# Amazon Bedrock Data Automation (BDA) as Parser
+# Bedrock Data Automation (BDA)를 이용한 RAG 구현
 
 ## 1. 개요
 
