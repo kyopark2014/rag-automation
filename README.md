@@ -4,10 +4,10 @@
 
 Amazon Bedrock Data Automation(BDA)은 문서, 이미지, 영상, 오디오 등 비정형 콘텐츠에서 가치 있는 인사이트를 추출하는 완전 관리형 클라우드 서비스입니다. 생성형 AI를 활용하여 멀티모달 데이터를 구조화된 형식으로 변환하며, 복잡한 AI 모델 오케스트레이션 없이 단일 API로 처리할 수 있습니다.
 
-**Knowledge Bases에서의 Parser 역할:**
-Amazon Bedrock Knowledge Bases의 데이터 소스 수집(Ingestion) 단계에서 BDA를 파서(Parser)로 지정하면, PDF, 이미지, 오디오, 비디오 등 멀티모달 콘텐츠를 텍스트 표현으로 변환하거나 멀티모달 임베딩을 위한 원본 파일로 저장하여 RAG(Retrieval Augmented Generation) 기반 질의응답 애플리케이션의 품질을 크게 향상시킬 수 있습니다.
 
 ## Bedrock Data Automation
+
+Amazon Bedrock Knowledge Bases의 데이터 소스 수집(Ingestion) 단계에서 BDA를 파서(Parser)로 지정하면, PDF, 이미지, 오디오, 비디오 등 멀티모달 콘텐츠를 텍스트 표현으로 변환하거나 멀티모달 임베딩을 위한 원본 파일로 저장하여 RAG(Retrieval Augmented Generation) 기반 질의응답 애플리케이션의 품질을 크게 향상시킬 수 있습니다.
 
 ### 파서 옵션 비교
 
