@@ -461,21 +461,7 @@ python add_content.py
 
 인제스션 진행 상황은 AWS 콘솔 → **Bedrock → Knowledge Bases → 데이터 소스 → Sync history** 에서 확인할 수 있습니다.
 
-### 5단계: 애플리케이션 접속
-
-EC2 인스턴스에서는 User Data 스크립트가 Docker 컨테이너로 `streamlit run application/app.py` (포트 8501)를 자동 기동하며, ALB → CloudFront를 통해 외부에 노출됩니다.
-
-```
-브라우저 접속: https://<CloudFront 도메인>
-```
-
-사이드바에서 다음을 선택해 사용합니다.
-
-1. **모델 선택** — Nova Pro/Lite/Micro, Claude 등
-2. **모드 선택** — `일상적인 대화`, `RAG`, `Agent`, `Agent (Chat)`, `이미지 분석`
-3. **MCP 서버 선택** (Agent 모드) — `knowledge base`, `aws_documentation`, `tavily-search`, 사용자 설정 등
-
-### (선택) 로컬에서 애플리케이션 실행
+### 로컬에서 애플리케이션 실행
 
 EC2 없이 로컬에서 UI를 띄워 테스트할 수도 있습니다. `application/config.json`이 `installer.py` 실행 후 채워져 있어야 합니다.
 
