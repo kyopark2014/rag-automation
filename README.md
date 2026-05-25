@@ -396,11 +396,7 @@ rag-automation/
 ### 1단계: 저장소 클론 및 의존성 설치
 
 ```bash
-git clone <repository-url> rag-automation
-cd rag-automation
-
-python -m venv .venv
-source .venv/bin/activate
+git clone https://github.com/kyopark2014/rag-automation && cd rag-automation
 
 pip install -r requirements.txt
 ```
@@ -449,28 +445,17 @@ Infrastructure Deployment Completed Successfully!
 
 ### 4단계: 문서 적재 및 Knowledge Base 동기화
 
-배포가 끝나면 `add_content.py`를 사용해 S3에 문서를 업로드하고 Knowledge Base 인제스션(BDA 파싱)을 트리거합니다.
-
-```bash
-python add_content.py
-```
-
-- 기본적으로 `add_content.py` 내부의 `url_sources`(원격 PDF)와 `file_sources`(`contents/` 로컬 파일)를 읽어 `s3://<bucket>/docs/` 경로에 업로드합니다.
-- 동일 키가 이미 S3에 존재하면 업로드는 건너뛰고, 마지막에 `bedrock-agent.start_ingestion_job`을 호출하여 BDA 파서로 재색인합니다.
-- 새로운 파일을 추가하려면 `add_content.py`의 `url_sources` / `file_sources` 리스트에 항목을 추가하면 됩니다.
-
-인제스션 진행 상황은 AWS 콘솔 → **Bedrock → Knowledge Bases → 데이터 소스 → Sync history** 에서 확인할 수 있습니다.
+배포가 끝나면 streamlit에서 파일을 업로드하고 자동으로 Knowledge Base에서 sync가 수행됩니다. 진행 상황은 AWS 콘솔 → **Bedrock → Knowledge Bases → 데이터 소스 → Sync history** 에서 확인할 수 있습니다.
 
 ### 로컬에서 애플리케이션 실행
 
-EC2 없이 로컬에서 UI를 띄워 테스트할 수도 있습니다. `application/config.json`이 `installer.py` 실행 후 채워져 있어야 합니다.
+로컬에서 아래처럼 UI를 띄워 테스트할 수도 있습니다. 
 
 ```bash
-cd application
-streamlit run app.py --server.port 8501
+streamlit run application/app.py 
 ```
 
-브라우저에서 `http://localhost:8501` 로 접속합니다. Knowledge Base / S3 / Bedrock 호출은 모두 `config.json`에 기록된 리전·KB ID·역할을 통해 이루어집니다.
+이후 자동으로 브라우저에서 `http://localhost:8501` 로 접속됩니다. Knowledge Base / S3 / Bedrock 호출은 모두 `config.json`에 기록된 리전·KB ID·역할을 통해 이루어집니다.
 
 ### 리소스 정리 (Uninstall)
 
