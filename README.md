@@ -4,6 +4,10 @@
 
 Amazon Bedrock Data Automation(BDA)은 문서, 이미지, 영상, 오디오 등 비정형 콘텐츠에서 가치 있는 인사이트를 추출하는 완전 관리형 클라우드 서비스입니다. 생성형 AI를 활용하여 멀티모달 데이터를 구조화된 형식으로 변환하며, 복잡한 AI 모델 오케스트레이션 없이 단일 API로 처리할 수 있습니다.
 
+전체 architecture는 아래와 같습니다. 사용자는 streamlit을 이용해 접속해서 파일을 업로드하면 Amazon S3에 저장됩니다. 이후 Knowledge Base로 sync 요청을 하면 문서가 chunking/embedding을 거쳐서 Serverless OpenSearch에 저장됩니다. 이후로 사용자가 질의를 하면 MCP를 이용해 Knowledge Base를 이용해 조회됩니다. Knowledge Base는 Hybrid로 vector/keyword 검색이 가능하며, 문서 추가나 삭제가 용이합니다. 
+
+<img width="800" alt="image" src="https://github.com/user-attachments/assets/1805c976-5bf2-45f5-86ea-32ee24160d05" />
+
 
 ## Bedrock Data Automation
 
