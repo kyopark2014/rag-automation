@@ -7,8 +7,6 @@ import uuid
 import base64
 import info 
 import utils
-import langgraph_agent
-import mcp_config
 import csv
 import PyPDF2
 from langchain_core.documents import Document
@@ -81,24 +79,20 @@ s3_image_prefix = "images"
 path = config.get('sharing_url', '')
 doc_prefix = "docs/"
 
-MSG_LENGTH = 100    
-
-model_name = "Claude 4.6 Sonnet"
+model_name = "Claude 4.5 Sonnet"
 model_type = "claude"
 models = info.get_model_info(model_name)
 number_of_models = len(models)
 model_id = models[0]["model_id"]
 debug_mode = "Enable"
+skill_mode = "Disable"
+contextual_embedding = "Enable"
+user_id = "agent"
+multi_region = 'Disable'
 
-aws_access_key = config.get('aws', {}).get('access_key_id')
-aws_secret_key = config.get('aws', {}).get('secret_access_key')
-aws_session_token = config.get('aws', {}).get('session_token')
-
-user_id = "mcp"
-
-def update(modelName, debugMode):    
+def update(modelName, debugMode, skillMode):    
     global model_name, model_id, model_type, debug_mode
-    global models, user_id
+    global models, user_id, skill_mode
 
     if model_name != modelName:
         model_name = modelName
@@ -112,6 +106,10 @@ def update(modelName, debugMode):
         debug_mode = debugMode        
         logger.info(f"debug_mode: {debug_mode}")
 
+    if skill_mode != skillMode:
+        skill_mode = skillMode
+        logger.info(f"skill_mode: {skill_mode}")
+
     # logger.info(f"mcp.env updated: {mcp_env}")
 
 map_chain = dict() 
@@ -123,8 +121,14 @@ checkpointer = MemorySaver()
 memorystore = InMemoryStore()
 
 def initiate():
+    global user_id
+    
+    user_id = uuid.uuid4().hex
+    logger.info(f"user_id: {user_id}")
+
     global memory_chain, checkpointer, memorystore, checkpointers, memorystores
 
+    # general conversation memory
     if user_id in map_chain:  
         logger.info(f"memory exist. reuse it!")
         memory_chain = map_chain[user_id]
@@ -144,6 +148,7 @@ def initiate():
 
 def clear_chat_history():
     global memory_chain
+
     # Initialize memory_chain if it doesn't exist
     if memory_chain is None:
         initiate()
@@ -162,13 +167,22 @@ def save_chat_history(text, msg):
     
     if memory_chain and hasattr(memory_chain, 'chat_memory'):
         memory_chain.chat_memory.add_user_message(text)
-        if len(msg) > MSG_LENGTH:
-            memory_chain.chat_memory.add_ai_message(msg[:MSG_LENGTH])                          
-        else:
-            memory_chain.chat_memory.add_ai_message(msg) 
+        memory_chain.chat_memory.add_ai_message(msg) 
 
 selected_chat = 0
-def get_chat(extended_thinking):
+def get_max_output_tokens(model_id: str = "") -> int:
+    """Return the max output tokens based on the model ID."""
+    if "claude-opus-4-6" in model_id:
+        return 128000
+    if "claude-opus-4-5" in model_id:
+        return 64000
+    if "claude-opus-4" in model_id or "claude-4-opus" in model_id:
+        return 32000
+    if "claude-sonnet-4" in model_id or "claude-4-sonnet" in model_id or "claude-haiku-4" in model_id:
+        return 64000
+    return 8192
+
+def get_chat():
     global selected_chat, model_type
 
     logger.info(f"models: {models}")
@@ -181,9 +195,9 @@ def get_chat(extended_thinking):
     modelId = profile['model_id']
     model_type = profile['model_type']
     if model_type == 'claude':
-        maxOutputTokens = 4096 # 4k
+        maxOutputTokens = get_max_output_tokens(modelId)
     else:
-        maxOutputTokens = 5120 # 5k
+        maxOutputTokens = 5120  # 5k
     number_of_models = len(models)
 
     logger.info(f"LLM: {selected_chat}, bedrock_region: {bedrock_region}, modelId: {modelId}, model_type: {model_type}")
@@ -196,56 +210,26 @@ def get_chat(extended_thinking):
         STOP_SEQUENCE = "" 
                           
     # bedrock   
-    if aws_access_key and aws_secret_key:
-        boto3_bedrock = boto3.client(
-            service_name='bedrock-runtime',
-            region_name=bedrock_region,
-            aws_access_key_id=aws_access_key,
-            aws_secret_access_key=aws_secret_key,
-            aws_session_token=aws_session_token,
-            config=Config(
-                retries = {
-                    'max_attempts': 30
-                }
-            )
-        )
-    else:
-        boto3_bedrock = boto3.client(
-            service_name='bedrock-runtime',
-            region_name=bedrock_region,
-            config=Config(
-                retries = {
-                    'max_attempts': 30
-                }
-            )
-        )
-
-    if profile['model_type'] != 'openai' and extended_thinking=='Enable':
-        maxReasoningOutputTokens=64000
-        logger.info(f"extended_thinking: {extended_thinking}")
-        thinking_budget = min(maxOutputTokens, maxReasoningOutputTokens-1000)
-
-        parameters = {
-            "max_tokens":maxReasoningOutputTokens,
-            "temperature":1,            
-            "thinking": {
-                "type": "enabled",
-                "budget_tokens": thinking_budget
+    boto3_bedrock = boto3.client(
+        service_name='bedrock-runtime',
+        region_name=bedrock_region,
+        config=Config(
+            retries = {
+                'max_attempts': 30
             },
-            "stop_sequences": [STOP_SEQUENCE]
-        }
-    elif profile['model_type'] != 'openai' and extended_thinking=='Disable':
+            read_timeout=300
+        )
+    )
+
+    if profile['model_type'] != 'openai':
         parameters = {
             "max_tokens":maxOutputTokens,     
-            "temperature":0.1,
-            "top_k":250,
             "stop_sequences": [STOP_SEQUENCE]
         }
     elif profile['model_type'] == 'openai':
         parameters = {
             "max_tokens":maxOutputTokens,     
-            "temperature":0.1,
-            "top_k":250,
+            "temperature":0.1
         }
 
     chat = ChatBedrock(   # new chat model
@@ -255,20 +239,29 @@ def get_chat(extended_thinking):
         region_name=bedrock_region
     )
     
-    selected_chat = 0
+    # Disable streaming for OpenAI models
+    if profile['model_type'] == 'openai':
+        chat.streaming = False
+    
+    if multi_region=='Enable':
+        selected_chat = selected_chat + 1
+        if selected_chat == number_of_models:
+            selected_chat = 0
+    else:
+        selected_chat = 0
 
     return chat
 
 def print_doc(i, doc):
     if len(doc.page_content)>=100:
-        text = doc.page_content[:100]
+        text = doc.page_content[:200]
     else:
         text = doc.page_content
             
     logger.info(f"{i}: {text}, metadata:{doc.metadata}")
 
 def translate_text(text):
-    chat = get_chat(extended_thinking='Disable')
+    chat = get_chat()
 
     system = (
         "You are a helpful assistant that translates {input_language} to {output_language} in <article> tags. Put it in <result> tags."
@@ -396,7 +389,7 @@ def summary_of_code(code, mode):
     prompt = ChatPromptTemplate.from_messages([("system", system), ("human", human)])
     # print('prompt: ', prompt)
     
-    llm = get_chat(extended_thinking='Disable')
+    llm = get_chat()
 
     chain = prompt | llm    
     try: 
@@ -505,7 +498,7 @@ def get_summary_of_uploaded_file(file_name, st):
         if isResized:
             img = img.resize((width, height))
         
-        # Base64 크기 확인 및 추가 리사이징
+        # Base64 size verification and additional resizing
         max_attempts = 5
         for attempt in range(max_attempts):
             buffer = BytesIO()
@@ -513,14 +506,14 @@ def get_summary_of_uploaded_file(file_name, st):
             img_bytes = buffer.getvalue()
             img_base64 = base64.b64encode(img_bytes).decode("utf-8")
             
-            # Base64 크기 확인 (실제 전송될 크기)
+            # Base64 size check (actual payload size)
             base64_size = len(img_base64.encode('utf-8'))
             logger.info(f"attempt {attempt + 1}: base64_size = {base64_size} bytes")
             
             if base64_size <= max_size:
                 break
             else:
-                # 크기가 여전히 크면 더 작게 리사이징
+                # Resize smaller if still too large
                 width = int(width * 0.8)
                 height = int(height * 0.8)
                 img = img.resize((width, height))
@@ -572,6 +565,7 @@ def get_summary_of_uploaded_file(file_name, st):
 
     return msg
 
+
 def upload_to_s3(file_bytes, file_name):
     """
     Upload a file to S3 and return the URL
@@ -592,26 +586,27 @@ def upload_to_s3(file_bytes, file_name):
         logger.info(f"content_type: {content_type}") 
 
         if content_type == "image/jpeg" or content_type == "image/png":
-            s3_key = f"{s3_image_prefix}/{file_name}"
+            prefix = s3_image_prefix
         else:
-            s3_key = f"{s3_prefix}/{file_name}"
-        
+            prefix = s3_prefix
+
+        s3_key = f"{prefix}/{file_name}"
+        url = f"{path}/{prefix}/{parse.quote(file_name)}"
+
         user_meta = {  # user-defined metadata
             "content_type": content_type,
             "model_name": model_name
         }
-        
+
         response = s3_client.put_object(
-            Bucket=s3_bucket, 
-            Key=s3_key, 
+            Bucket=s3_bucket,
+            Key=s3_key,
             ContentType=content_type,
-            Metadata = user_meta,
-            Body=file_bytes            
+            Metadata=user_meta,
+            Body=file_bytes
         )
         logger.info(f"upload response: {response}")
 
-        #url = f"https://{s3_bucket}.s3.amazonaws.com/{s3_key}"
-        url = path+'/'+s3_image_prefix+'/'+parse.quote(file_name)
         return url
     
     except Exception as e:
@@ -678,29 +673,16 @@ def get_parallel_processing_chat(models, selected):
         STOP_SEQUENCE = "" 
                           
     # bedrock   
-    if aws_access_key and aws_secret_key:
-        boto3_bedrock = boto3.client(
-            service_name='bedrock-runtime',
-            region_name=bedrock_region,
-            aws_access_key_id=aws_access_key,
-            aws_secret_access_key=aws_secret_key,
-            aws_session_token=aws_session_token,
-            config=Config(
-                retries = {
-                    'max_attempts': 30
-                }
-            )
+    boto3_bedrock = boto3.client(
+        service_name='bedrock-runtime',
+        region_name=bedrock_region,
+        config=Config(
+            retries = {
+                'max_attempts': 30
+            },
+            read_timeout=300
         )
-    else:
-        boto3_bedrock = boto3.client(
-            service_name='bedrock-runtime',
-            region_name=bedrock_region,
-            config=Config(
-                retries = {
-                    'max_attempts': 30
-                }
-            )
-        )
+    )
 
     if profile['model_type'] != 'openai':
         parameters = {
@@ -712,8 +694,7 @@ def get_parallel_processing_chat(models, selected):
     else:
         parameters = {
             "max_tokens":maxOutputTokens,     
-            "temperature":0.1,
-            "top_k":250
+            "temperature":0.1
         }
 
     chat = ChatBedrock(   # new chat model
@@ -721,6 +702,10 @@ def get_parallel_processing_chat(models, selected):
         client=boto3_bedrock, 
         model_kwargs=parameters,
     )        
+    
+    # Disable streaming for OpenAI models
+    if profile['model_type'] == 'openai':
+        chat.streaming = False
     
     return chat
 
@@ -736,8 +721,12 @@ def show_extended_thinking(st, result):
 #########################################################
 def general_conversation(query):
     global memory_chain
-    initiate()  # Initialize memory_chain
-    llm = get_chat(extended_thinking='Disable')
+
+    # Initialize memory_chain if it doesn't exist
+    if memory_chain is None:
+        initiate()  # Initialize memory_chain
+
+    llm = get_chat()
 
     system = (
         "당신의 이름은 서연이고, 질문에 대해 친절하게 답변하는 사려깊은 인공지능 도우미입니다."
@@ -779,7 +768,7 @@ def general_conversation(query):
     return stream
 
 def get_summary(docs):    
-    llm = get_chat(extended_thinking='Disable')
+    llm = get_chat()
 
     text = ""
     for doc in docs:
@@ -817,7 +806,7 @@ def get_summary(docs):
     return summary
 
 def summary_image(img_base64, instruction):      
-    llm = get_chat(extended_thinking='Disable')
+    llm = get_chat()
 
     if instruction:
         logger.info(f"instruction: {instruction}")
@@ -858,7 +847,7 @@ def summary_image(img_base64, instruction):
     return extracted_text
 
 def extract_text(img_base64):    
-    multimodal = get_chat(extended_thinking='Disable')
+    multimodal = get_chat()
     query = "텍스트를 추출해서 markdown 포맷으로 변환하세요. <result> tag를 붙여주세요."
     
     extracted_text = ""
@@ -909,7 +898,7 @@ def summarize_image(image_content, prompt, st):
     width, height = img.size 
     logger.info(f"width: {width}, height: {height}, size: {width*height}")
     
-    # 이미지 리사이징 및 크기 확인
+    # Image resizing and size verification
     isResized = False
     max_size = 5 * 1024 * 1024  # 5MB in bytes
     
@@ -980,9 +969,9 @@ def summarize_image(image_content, prompt, st):
     logger.info(f"image summary: {image_summary}")
             
     # if len(extracted_text) > 10:
-    #     contents = f"## 이미지 분석\n\n{image_summary}\n\n## 추출된 텍스트\n\n{extracted_text}"
+    #     contents = f"## Image analysis\n\n{image_summary}\n\n## Extracted text\n\n{extracted_text}"
     # else:
-    #     contents = f"## 이미지 분석\n\n{image_summary}"
+    #     contents = f"## Image analysis\n\n{image_summary}"
     contents = f"## 이미지 분석\n\n{image_summary}"
     logger.info(f"image contents: {contents}")
 
@@ -993,7 +982,7 @@ def summarize_image(image_content, prompt, st):
 ############################################################# 
 def get_rag_prompt(text):
     # print("###### get_rag_prompt ######")
-    llm = get_chat(extended_thinking='Disable')
+    llm = get_chat()
     # print('model_type: ', model_type)
     
     if model_type == "nova":
@@ -1054,19 +1043,10 @@ def get_rag_prompt(text):
 
     return rag_chain
 
-if aws_access_key and aws_secret_key:
-    bedrock_agent_runtime_client = boto3.client(
-        "bedrock-agent-runtime",
-        region_name=bedrock_region,
-        aws_access_key_id=aws_access_key,
-        aws_secret_access_key=aws_secret_key,
-        aws_session_token=aws_session_token,
-    )
-else:
-    bedrock_agent_runtime_client = boto3.client(
-        "bedrock-agent-runtime",
-        region_name=bedrock_region
-    )
+bedrock_agent_runtime_client = boto3.client(
+    "bedrock-agent-runtime",
+    region_name=bedrock_region
+)
 knowledge_base_id = config.get('knowledge_base_id')
 number_of_results = 4
 
@@ -1089,25 +1069,12 @@ def retrieve(query):
             logger.warning(f"ResourceNotFoundException occurred: {e}")
             logger.info("Attempting to update knowledge_base_id...")
             
-            bedrock_region_local = config.get('region', 'us-west-2')
-            projectName_local = config.get('projectName')
-
-            # Create bedrock-agent client with same credentials as bedrock-agent-runtime client
-            if aws_access_key and aws_secret_key:
-                bedrock_agent_client = boto3.client(
-                    "bedrock-agent",
-                    region_name=bedrock_region_local,
-                    aws_access_key_id=aws_access_key,
-                    aws_secret_access_key=aws_secret_key,
-                    aws_session_token=aws_session_token,
-                )
-            else:
-                bedrock_agent_client = boto3.client("bedrock-agent", region_name=bedrock_region_local)
+            bedrock_agent_client = boto3.client("bedrock-agent", region_name=bedrock_region)
             knowledge_base_list = bedrock_agent_client.list_knowledge_bases()
             
             updated = False
             for knowledge_base in knowledge_base_list.get("knowledgeBaseSummaries", []):
-                if knowledge_base["name"] == projectName_local:
+                if knowledge_base["name"] == projectName:
                     new_knowledge_base_id = knowledge_base["knowledgeBaseId"]
                     knowledge_base_id = new_knowledge_base_id
 
@@ -1134,7 +1101,7 @@ def retrieve(query):
                     logger.error(f"Retry failed after updating knowledge_base_id: {retry_error}")
                     raise
             else:
-                logger.error(f"Could not find knowledge base with name: {projectName_local}")
+                logger.error(f"Could not find knowledge base with name: {projectName}")
                 raise
         else:
             # Re-raise other errors that are not ResourceNotFoundException
@@ -1171,10 +1138,10 @@ def retrieve(query):
                 name = "WEB"
 
         json_docs.append({
-            "contents": text or "",
+            "contents": text,              
             "reference": {
-                "url": url or "",
-                "title": name or "Unknown",
+                "url": url,                   
+                "title": name,
                 "from": "RAG"
             }
         })
@@ -1198,10 +1165,7 @@ def run_rag_with_knowledge_base(query, st):
 
     relevant_context = ""
     for doc in relevant_docs:
-        contents = doc.get("contents") or ""
-        if not isinstance(contents, str):
-            contents = str(contents)
-        relevant_context += f"{contents}\n\n"
+        relevant_context += f"{doc['contents']}\n\n"
 
     # change format to document
     st.info(f"{len(relevant_docs)}개의 관련된 문서를 얻었습니다.")
@@ -1230,14 +1194,12 @@ def run_rag_with_knowledge_base(query, st):
     if relevant_docs:
         ref = "\n\n### Reference\n"
         for i, doc in enumerate(relevant_docs):
-            contents = doc.get("contents") or ""
-            if not isinstance(contents, str):
-                contents = str(contents)
-            page_content = contents[:100].replace("\n", " ")
-            reference = doc.get("reference") or {}
-            title = reference.get("title") or "Unknown"
-            url = reference.get("url") or "#"
-            ref += f"{i+1}. [{title}]({url}), {page_content}...\n"
+            page_content = doc["contents"][:200].replace("\n", "")
+            page = doc["reference"].get("page")
+            page_part = f", page {page}" if page not in (None, "") else ""
+            ref_from = doc["reference"].get("from")
+            from_part = f", {ref_from}" if ref_from in ("vector", "lexical") else ""
+            ref += f"{i+1}. [{doc['reference']['title']}]({doc['reference']['url']}){page_part}{from_part}, {page_content}...\n"    
         logger.info(f"ref: {ref}")
         msg += ref
     
@@ -1261,34 +1223,22 @@ def extract_thinking_tag(response, st):
 
     return msg
 
-streaming_index = None
-index = 0
-def add_notification(containers, message):
-    global index
+def add_notification(notification_queue, message):
+    if notification_queue is not None:
+        notification_queue.notify(message)
 
-    if index == streaming_index:
-        index += 1
-
-    if containers is not None:
-        containers['notification'][index].info(message)
-    index += 1
-
-def update_streaming_result(containers, message, type):
-    global streaming_index
-    streaming_index = index
-
-    if containers is not None:
+def update_streaming_result(notification_queue, message, type="markdown"):
+    if notification_queue is not None:
         if type == "markdown":
-            containers['notification'][streaming_index].markdown(message)
+            notification_queue.stream(message)
         elif type == "info":
-            containers['notification'][streaming_index].info(message)
-def update_tool_notification(containers, tool_index, message):
-    if containers is not None:
-        containers['notification'][tool_index].info(message)
+            notification_queue.notify(message)
 
-tool_info_list = dict()
+def update_final_result(notification_queue, message):
+    if notification_queue is not None:
+        notification_queue.result(message)
+
 tool_input_list = dict()
-tool_name_list = dict()
 
 sharing_url = config["sharing_url"] if "sharing_url" in config else None
 s3_prefix = "docs"
@@ -1330,7 +1280,7 @@ def get_tool_info(tool_name, tool_content):
                 tool_references.append({
                     "url": metadata["url"], 
                     "title": filename,
-                    "content": content_part[:100] + "..." if len(content_part) > 100 else content_part
+                    "content": content_part[:200] + "..." if len(content_part) > 100 else content_part
                 })
                 
         logger.info(f"content: {content}")
@@ -1338,16 +1288,16 @@ def get_tool_info(tool_name, tool_content):
     # aws document
     elif tool_name == "search_documentation":
         try:
-            # tool_content가 리스트인 경우 처리 (예: [{'type': 'text', 'text': '...'}])
+            # Handle tool_content when it is a list (e.g. [{'type': 'text', 'text': '...'}])
             if isinstance(tool_content, list):
-                # 리스트의 첫 번째 항목에서 text 필드 추출
+                # Extract text field from the first list item
                 if len(tool_content) > 0 and isinstance(tool_content[0], dict) and 'text' in tool_content[0]:
                     tool_content = tool_content[0]['text']
                 else:
                     logger.info(f"Unexpected list format: {tool_content}")
                     return content, urls, tool_references
             
-            # tool_content가 문자열인 경우 JSON 파싱
+            # Parse JSON when tool_content is a string
             if isinstance(tool_content, str):
                 json_data = json.loads(tool_content)
             elif isinstance(tool_content, dict):
@@ -1356,10 +1306,10 @@ def get_tool_info(tool_name, tool_content):
                 logger.info(f"Unexpected tool_content type: {type(tool_content)}")
                 return content, urls, tool_references
             
-            # search_results 배열에서 결과 추출
+            # Extract results from search_results array
             search_results = json_data.get('search_results', [])
             if not search_results:
-                # search_results가 없으면 json_data 자체가 배열일 수 있음
+                # If no search_results, json_data may be the array itself
                 if isinstance(json_data, list):
                     search_results = json_data
                 else:
@@ -1379,7 +1329,7 @@ def get_tool_info(tool_name, tool_content):
                 if isinstance(item, dict) and 'url' in item and 'title' in item:
                     url = item['url']
                     title = item['title']
-                    content_text = item.get('context', '')[:100] + "..." if len(item.get('context', '')) > 100 else item.get('context', '')
+                    content_text = item.get('context', '')[:200] + "..." if len(item.get('context', '')) > 100 else item.get('context', '')
                     tool_references.append({
                         "url": url,
                         "title": title,
@@ -1454,7 +1404,7 @@ def get_tool_info(tool_name, tool_content):
                                 if content_start < len(result):
                                     content_text = result[content_start:].strip()
                                     # Truncate content for display
-                                    display_content = content_text[:100] + "..." if len(content_text) > 100 else content_text
+                                    display_content = content_text[:200] + "..." if len(content_text) > 100 else content_text
                                     display_content = display_content.replace("\n", "")
                                     
                                     tool_references.append({
@@ -1469,6 +1419,9 @@ def get_tool_info(tool_name, tool_content):
                         logger.error(f"Error parsing AWS Documentation format: {e}")
         logger.info(f"content: {content}")
         logger.info(f"tool_references: {tool_references}")
+
+    elif tool_name in ("memory_search", "memory_get"):
+        pass
 
     else:        
         try:
@@ -1509,52 +1462,68 @@ def get_tool_info(tool_name, tool_content):
                     if "reference" in item and "contents" in item:
                         url = item["reference"]["url"]
                         title = item["reference"]["title"]
-                        content_text = item["contents"][:100] + "..." if len(item["contents"]) > 100 else item["contents"]
+                        page = item["reference"].get("page", "")
+                        ref_from = item["reference"].get("from", "")
+                        content_text = item["contents"][:200] + "..." if len(item["contents"]) > 100 else item["contents"]
                         tool_references.append({
                             "url": url,
                             "title": title,
+                            "page": page,
+                            "from": ref_from,
                             "content": content_text
                         })
             elif isinstance(json_data, list):
-                logger.info(f"json_data is a list: {json_data}")
+                # logger.info(f"json_data is a list: {json_data}")
                 for item in json_data:
                     if isinstance(item, dict) and "text" in item:
                         try:
-                            # text 필드 안의 JSON 문자열 파싱
+                            # Parse JSON string inside text field
                             text_json = json.loads(item["text"])
                             if isinstance(text_json, list):
-                                # 파싱된 JSON이 리스트인 경우
+                                # Parsed JSON is a list
                                 for ref_item in text_json:
                                     if isinstance(ref_item, dict) and "reference" in ref_item and "contents" in ref_item:
                                         url = ref_item["reference"]["url"]
                                         title = ref_item["reference"]["title"]
-                                        content_text = ref_item["contents"][:100] + "..." if len(ref_item["contents"]) > 100 else ref_item["contents"]
+                                        page = ref_item["reference"].get("page", "")
+                                        ref_from = ref_item["reference"].get("from", "")
+                                        content_text = ref_item["contents"][:200] + "..." if len(ref_item["contents"]) > 100 else ref_item["contents"]
                                         tool_references.append({
                                             "url": url,
                                             "title": title,
+                                            "page": page,
+                                            "from": ref_from,
                                             "content": content_text
                                         })
                             elif isinstance(text_json, dict) and "reference" in text_json and "contents" in text_json:
-                                # 파싱된 JSON이 딕셔너리인 경우
+                                # Parsed JSON is a dict
                                 url = text_json["reference"]["url"]
                                 title = text_json["reference"]["title"]
-                                content_text = text_json["contents"][:100] + "..." if len(text_json["contents"]) > 100 else text_json["contents"]
+                                page = text_json["reference"].get("page", "")
+                                ref_from = text_json["reference"].get("from", "")
+                                content_text = text_json["contents"][:200] + "..." if len(text_json["contents"]) > 100 else text_json["contents"]
                                 tool_references.append({
                                     "url": url,
                                     "title": title,
+                                    "page": page,
+                                    "from": ref_from,
                                     "content": content_text
                                 })
                         except (json.JSONDecodeError, TypeError) as e:
                             logger.warning(f"Failed to parse text JSON: {e}")
                             pass
                     elif isinstance(item, dict) and "reference" in item and "contents" in item:
-                        # 리스트 항목이 직접 reference를 가지고 있는 경우
+                        # List item has reference directly
                         url = item["reference"]["url"]
                         title = item["reference"]["title"]
-                        content_text = item["contents"][:100] + "..." if len(item["contents"]) > 100 else item["contents"]
+                        page = item["reference"].get("page", "")
+                        ref_from = item["reference"].get("from", "")
+                        content_text = item["contents"][:200] + "..." if len(item["contents"]) > 100 else item["contents"]
                         tool_references.append({
                             "url": url,
                             "title": title,
+                            "page": page,
+                            "from": ref_from,
                             "content": content_text
                         })
                 
@@ -1564,149 +1533,3 @@ def get_tool_info(tool_name, tool_content):
             pass
 
     return content, urls, tool_references
-
-async def run_langgraph_agent(query, mcp_servers, history_mode, containers):
-    global index, streaming_index
-    index = 0
-
-    image_url = []
-    references = []
-
-    mcp_json = mcp_config.load_selected_config(mcp_servers)
-    logger.info(f"mcp_json: {mcp_json}")
-
-    server_params = langgraph_agent.load_multiple_mcp_server_parameters(mcp_json)
-    logger.info(f"server_params: {server_params}")    
-
-    try:
-        client = MultiServerMCPClient(server_params)
-        logger.info(f"MCP client created successfully")
-        
-        tools = await client.get_tools()
-        logger.info(f"get_tools() returned: {tools}")
-        
-        if tools is None:
-            logger.error("tools is None - MCP client failed to get tools")
-            tools = []
-        
-        tool_list = [tool.name for tool in tools] if tools else []
-        logger.info(f"tool_list: {tool_list}")
-        
-    except Exception as e:
-        logger.error(f"Error creating MCP client or getting tools: {e}")                        
-        tools = []
-        tool_list = []        
-
-    # If no tools available, use general conversation
-    if not tools:
-        logger.warning("No tools available, using general conversation mode")
-        result = "MCP 설정을 확인하세요."
-        if containers is not None:
-            containers['notification'][0].markdown(result)
-        return result, image_url
-    
-    if history_mode == "Enable":
-        app = langgraph_agent.buildChatAgentWithHistory(tools)
-        config = {
-            "recursion_limit": 50,
-            "configurable": {"thread_id": user_id},
-            "tools": tools,
-            "system_prompt": None
-        }
-    else:
-        app = langgraph_agent.buildChatAgent(tools)
-        config = {
-            "recursion_limit": 50,
-            "configurable": {"thread_id": user_id},
-            "tools": tools,
-            "system_prompt": None
-        }        
-    
-    inputs = {
-        "messages": [HumanMessage(content=query)]
-    }
-            
-    result = ""
-    tool_used = False  # Track if tool was used
-    tool_name = toolUseId = ""
-    async for stream in app.astream(inputs, config, stream_mode="messages"):
-        if isinstance(stream[0], AIMessageChunk):
-            message = stream[0]    
-            input = {}        
-            if isinstance(message.content, list):
-                for content_item in message.content:
-                    if isinstance(content_item, dict):
-                        if content_item.get('type') == 'text':
-                            text_content = content_item.get('text', '')
-                            # logger.info(f"text_content: {text_content}")
-                            
-                            # If tool was used, start fresh result
-                            if tool_used:
-                                result = text_content
-                                tool_used = False
-                            else:
-                                result += text_content
-                                
-                            # logger.info(f"result: {result}")                
-                            update_streaming_result(containers, result, "markdown")
-
-                        elif content_item.get('type') == 'tool_use':
-                            logger.info(f"content_item: {content_item}")      
-                            if 'id' in content_item and 'name' in content_item:
-                                toolUseId = content_item.get('id', '')
-                                tool_name = content_item.get('name', '')
-                                logger.info(f"tool_name: {tool_name}, toolUseId: {toolUseId}")
-                                streaming_index = index
-                                index += 1
-                                                                    
-                            if 'partial_json' in content_item:
-                                partial_json = content_item.get('partial_json', '')
-                                logger.info(f"partial_json: {partial_json}")
-                                
-                                if toolUseId not in tool_input_list:
-                                    tool_input_list[toolUseId] = ""                                
-                                tool_input_list[toolUseId] += partial_json
-                                input = tool_input_list[toolUseId]
-                                logger.info(f"input: {input}")
-
-                                logger.info(f"tool_name: {tool_name}, input: {input}, toolUseId: {toolUseId}")
-                                update_streaming_result(containers, f"Tool: {tool_name}, Input: {input}", "info")
-                        
-        elif isinstance(stream[0], ToolMessage):
-            message = stream[0]
-            logger.info(f"ToolMessage: {message.name}, {message.content}")
-            tool_name = message.name
-            toolResult = message.content
-            toolUseId = message.tool_call_id
-            logger.info(f"toolResult: {toolResult}, toolUseId: {toolUseId}")
-            add_notification(containers, f"Tool Result: {toolResult}")
-            tool_used = True
-            
-            content, urls, refs = get_tool_info(tool_name, toolResult)
-            if refs:
-                for r in refs:
-                    references.append(r)
-                logger.info(f"refs: {refs}")
-            if urls:
-                for url in urls:
-                    image_url.append(url)
-                logger.info(f"urls: {urls}")
-
-            if content:
-                logger.info(f"content: {content}")        
-    
-    if not result:
-        result = "답변을 찾지 못하였습니다."        
-    logger.info(f"result: {result}")
-
-    if references:
-        ref = "\n\n### Reference\n"
-        for i, reference in enumerate(references):
-            page_content = reference['content'][:100].replace("\n", "")
-            ref += f"{i+1}. [{reference['title']}]({reference['url']}), {page_content}...\n"    
-        result += ref
-    
-    if containers is not None:
-        containers['notification'][index].markdown(result)
-    
-    return result, image_url

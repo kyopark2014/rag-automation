@@ -2,6 +2,8 @@ import logging
 import sys
 import utils
 import os
+import json
+import boto3
 
 logging.basicConfig(
     level=logging.INFO,  # Default to INFO level
@@ -29,32 +31,53 @@ logger.info(f"contents_dir: {contents_dir}")
 
 mcp_user_config = {}    
 
-def load_config(mcp_type):
-    if mcp_type == "knowledge base":
-        mcp_type = "kb-retriever"
-
-    if mcp_type == "tavily-search":
-        return {
-            "mcpServers": {
-                "tavily-search": {
-                    "command": "python",
-                    "args": [
-                        f"{workingDir}/mcp_server_tavily.py"
-                    ]
-                }
+def get_secret_value(secret_name):
+    session = boto3.Session()
+    client = session.client('secretsmanager', region_name=region)
+    
+    try:
+        response = client.get_secret_value(SecretId=secret_name)
+        return response['SecretString']
+    except client.exceptions.ResourceNotFoundException:
+        logger.info(f"Secret not found, creating new secret: {secret_name}")
+        try:
+            # Create secret value with bearer_key 
+            secret_value = {
+                "key": secret_name,
+                "value": "need to update"
             }
-        }
-        
-    elif mcp_type == "kb-retriever":
+            
+            # Convert to JSON string
+            secret_string = json.dumps(secret_value)
+
+            client.create_secret(
+                Name=secret_name,
+                SecretString=secret_string,  
+                Description=f"secret key and token for {secret_name}"
+            )
+            logger.info(f"Secret created: {secret_name}. Please update it with the actual value.")
+            return None
+        except Exception as create_error:
+            logger.error(f"Failed to create secret: {create_error}")
+            return None
+    except Exception as e:
+        logger.error(f"Error getting secret value: {e}")
+        return None
+
+def load_config(mcp_type):
+    if mcp_type == "RAG":
+        mcp_type = "kb-retrieve"    
+    
+    if mcp_type == "kb-retrieve":
         return {
             "mcpServers": {
-                "kb_retriever": {
+                "kb-retrieve": {
                     "command": "python",
                     "args": [f"{workingDir}/mcp_server_retrieve.py"]
                 }
             }
         }
-        
+    
     elif mcp_type == "aws_documentation":
         return {
             "mcpServers": {
@@ -68,6 +91,26 @@ def load_config(mcp_type):
             }
         }
 
+    elif mcp_type == "web_fetch":
+        return {
+            "mcpServers": {
+                "web_fetch": {
+                    "command": "npx",
+                    "args": ["-y", "mcp-server-fetch-typescript"]
+                }
+            }
+        }
+    
+    elif mcp_type == "text_extraction":
+        return {
+            "mcpServers": {
+                "text_extraction": {
+                    "command": "python",
+                    "args": [f"{workingDir}/mcp_server_text_extraction.py"]
+                }
+            }
+        }
+    
     elif mcp_type == "사용자 설정":
         return mcp_user_config
 

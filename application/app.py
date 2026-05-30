@@ -1,11 +1,19 @@
 import streamlit as st 
+import streamlit_paste_button as spb
+import utils
 import chat
 import json
 import mcp_config 
 import logging
 import sys
 import os
+import uuid
 import asyncio
+import io
+import langgraph_agent
+import skill
+
+from notification_queue import NotificationQueue
 
 logging.basicConfig(
     level=logging.INFO,  # Default to INFO level
@@ -16,10 +24,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("streamlit")
 
-os.environ["DEV"] = "true"  # Skip user confirmation of get_user_input
+config = utils.load_config()
+sharing_url = config.get("sharing_url")
 
 # title
-st.set_page_config(page_title='BDA', page_icon=None, layout="centered", initial_sidebar_state="auto", menu_items=None)
+st.set_page_config(page_title='RAG', page_icon=None, layout="centered", initial_sidebar_state="auto", menu_items=None)
 
 mode_descriptions = {
     "일상적인 대화": [
@@ -29,55 +38,78 @@ mode_descriptions = {
         "Bedrock Knowledge Base를 이용해 구현한 RAG로 필요한 정보를 검색합니다."
     ],
     "Agent": [
-        "MCP와 LangGraph를 활용한 Agent를 이용합니다. 왼쪽 메뉴에서 필요한 MCP를 선택하세요."
+        "SKILL과 MCP를 활용한 Agent를 이용합니다. 왼쪽 메뉴에서 필요한 MCP를 선택하세요."
     ],
     "Agent (Chat)": [
-        "MCP를 활용한 Agent를 이용합니다. 채팅 히스토리를 이용해 interative한 대화를 즐길 수 있습니다."
+        "SKILL과 MCP를 활용한 Agent를 이용합니다. 채팅 히스토리를 이용해 interative한 대화를 즐길 수 있습니다."
+    ],
+    "번역하기": [
+        "한국어와 영어에 대한 번역을 제공합니다. 한국어로 입력하면 영어로, 영어로 입력하면 한국어로 번역합니다."        
     ],
     "이미지 분석": [
         "이미지를 선택하여 멀티모달을 이용하여 분석합니다."
     ]
 }
 
-agentType = 'langgraph'
 with st.sidebar:
     st.title("🔮 Menu")
     
     st.markdown(
         "Amazon Bedrock을 이용해 다양한 형태의 대화를 구현합니다." 
-        "여기에서는 MCP를 이용해 RAG를 구현하고, Multi agent를 이용해 다양한 기능을 구현할 수 있습니다." 
-        "또한 번역이나 문법 확인과 같은 용도로 사용할 수 있습니다."
-        "주요 코드는 LangChain과 LangGraph를 이용해 구현되었습니다.\n"
-        "상세한 코드는 [Github](https://github.com/kyopark2014/ds-project)을 참조하세요."
+        "여기에서는 SKILL과 MCP를 이용해 agent의 기능을 확장합니다." 
+        "주요 코드는 LangGraph를 이용해 구현되었습니다.\n"
+        "상세한 코드는 [Github](https://github.com/kyopark2014/rag-automation)을 참조하세요."
     )
 
     st.subheader("🐱 대화 형태")
     
     # radio selection
     mode = st.radio(
-        label="원하는 대화 형태를 선택하세요. ",options=["일상적인 대화", "RAG", "Agent", "Agent (Chat)", "이미지 분석"], index=3
+        label="원하는 대화 형태를 선택하세요. ",options=["일상적인 대화", "RAG", "Agent", "Agent (Chat)", "이미지 분석", "번역하기"], index=3
     )   
     st.info(mode_descriptions[mode][0])
     
     # mcp selection    
+    mcp_options = [
+        "RAG", 
+        "aws_documentation", 
+        "web_fetch",
+        "text_extraction",
+        "사용자 설정"
+    ]    
     if mode=='Agent' or mode=='Agent (Chat)':
+        # Skill Config JSON input
+        st.subheader("⚙️ Skill Config")
+
+        skill_selections = {}
+        default_skill_selections = config.get("default_skills") or ["skill-creator"]
+        logger.info(f"default_skill_selections: {default_skill_selections}")
+        with st.expander("Skill 옵션 선택", expanded=True):
+            available_skill_info = skill.available_skill_info("base")
+            for s in available_skill_info:
+                default_value = s["name"] in default_skill_selections
+                skill_selections[s["name"]] = st.checkbox(s["name"], key=f"skill_{s['name']}", value=default_value, help=s["description"], disabled=False)
+    
+        selected_skills = [name for name, is_selected in skill_selections.items() if is_selected]
+        logger.info(f"selected_skills: {selected_skills}")
+
+        if selected_skills != config.get("default_skills"):
+            config["default_skills"] = selected_skills
+            with open(utils.config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+
         # MCP Config JSON input
         st.subheader("⚙️ MCP Config")
 
-        # Change radio to checkbox
-        mcp_options = [
-            "knowledge base", 
-            "aws_documentation", 
-            "사용자 설정"
-        ]
+        # Change radio to checkbox        
         mcp_selections = {}
-        default_selections = ["knowledge base"]
+        default_selections = ["RAG"]
         
         with st.expander("MCP 옵션 선택", expanded=True):
             for option in mcp_options:
                 default_value = option in default_selections
                 mcp_selections[option] = st.checkbox(option, key=f"mcp_{option}", value=default_value)
-            
+                
         if mcp_selections["사용자 설정"]:
             mcp = {}
             try:
@@ -115,6 +147,7 @@ with st.sidebar:
             logger.info("save to user_defined_mcp.json")
         
         mcp_servers = [server for server, is_selected in mcp_selections.items() if is_selected]
+
     else:
         mcp_servers = []
 
@@ -123,13 +156,25 @@ with st.sidebar:
         '🖊️ 사용 모델을 선택하세요',
         (
             "Claude 4.6 Sonnet",
-            "Claude 4.7 Opus",
+            "Claude 4.8 Opus",
+            "Claude 4.7 Opus",            
             "Claude 4.6 Opus",
             "Claude 4.5 Haiku",
             "Claude 4.5 Sonnet",
-            "Claude 4.5 Opus"
+            "Claude 4.5 Opus",  
+            "OpenAI OSS 120B",
+            "OpenAI OSS 20B",
+            "Nova 2 Lite",
+            "Nova Premier", 
+            "Nova Pro", 
+            "Nova Lite", 
+            "Nova Micro",       
         ), index=0
     )
+
+    # skill checkbox
+    select_skillMode = st.checkbox('Skill Mode', value=True)
+    skillMode = 'Enable' if select_skillMode else 'Disable'    
 
     # debug checkbox
     select_debugMode = st.checkbox('Debug Mode', value=True)
@@ -137,14 +182,36 @@ with st.sidebar:
     #print('debugMode: ', debugMode)
 
     uploaded_file = None
+    pasted_image = None
+
+    def safe_paste_button(label, key):
+        """streamlit-paste-button 래퍼: 내부 이미지 디코딩 실패 시 안전하게 처리"""
+        try:
+            result = spb.paste_image_button(label, key=key, errors="ignore")
+            if result.image_data is not None:
+                return result.image_data
+        except Exception as e:
+            logger.warning(f"clipboard paste error: {e}")
+        return None
+
     if mode=='이미지 분석':
         st.subheader("🌇 이미지 업로드")
         uploaded_file = st.file_uploader("이미지 분석을 위한 파일을 선택합니다.", type=["png", "jpg", "jpeg"])
-    elif mode=='RAG' or mode=="Agent" or mode=="Agent (Chat)":
-        st.subheader("📋 문서 업로드")
-        uploaded_file = st.file_uploader("RAG를 위한 파일을 선택합니다.", type=["pdf", "txt", "py", "md", "csv", "json"], key=chat.fileId)
-
-    chat.update(modelName, debugMode)    
+        
+        st.markdown("**또는** 화면 캡처를 붙여넣으세요:")
+        pasted_image = safe_paste_button("📋 클립보드에서 붙여넣기", key="paste_image")
+    
+    elif mode=='RAG' or mode=='Agent' or mode=='Agent (Chat)':
+        st.subheader("📋 문서/이미지 업로드")
+        if "rag_uploader_key" not in st.session_state:
+            st.session_state.rag_uploader_key = f"{chat.fileId}_0"
+        uploaded_file = st.file_uploader(
+            "RAG를 위한 파일을 선택합니다.",
+            type=["pdf"],
+            key=st.session_state.rag_uploader_key,
+        )
+        
+    chat.update(modelName, debugMode, skillMode)    
 
     st.success(f"Connected to {modelName}", icon="💚")
     clear_button = st.button("대화 초기화", key="clear")
@@ -153,46 +220,73 @@ with st.sidebar:
 st.title('🔮 '+ mode)
 
 if clear_button==True:    
+    uploaded_file = None
+    pasted_image = None
     chat.map_chain = dict() 
     chat.checkpointers = dict() 
     chat.memorystores = dict() 
     chat.initiate()
 
+    # 업로더 위젯 초기화 (key를 바꾸면 선택된 파일이 비워짐)
+    st.session_state.processed_files = {}
+    base_key = st.session_state.get("rag_uploader_key", f"{chat.fileId}_0")
+    try:
+        prefix, idx = base_key.rsplit("_", 1)
+        next_idx = int(idx) + 1
+    except (ValueError, AttributeError):
+        prefix, next_idx = chat.fileId, 1
+    st.session_state.rag_uploader_key = f"{prefix}_{next_idx}"
+
 # Preview the uploaded image in the sidebar
 file_name = ""
 file_bytes = None
 state_of_code_interpreter = False
+
+# Handle pasted image from clipboard
+if pasted_image is not None and clear_button==False:
+    buf = io.BytesIO()
+    pasted_image.save(buf, format="PNG")
+    file_bytes = buf.getvalue()
+    file_name = "pasted_screenshot.png"
+    logger.info(f"pasted image: {file_name}, size={len(file_bytes)} bytes")
+
+    if mode == '이미지 분석':
+        st.image(pasted_image, caption="붙여넣은 이미지 미리보기", use_container_width=True)
+
 if uploaded_file is not None and clear_button==False:
     logger.info(f"uploaded_file.name: {uploaded_file.name}")
     if uploaded_file.name:
         logger.info(f"csv type? {uploaded_file.name.lower().endswith(('.csv'))}")
 
     if uploaded_file and uploaded_file.name and not mode == '이미지 분석':
-        chat.initiate()
+        if "processed_files" not in st.session_state:
+            st.session_state.processed_files = {}
 
-        if debugMode=='Enable':
-            status = '선택한 파일을 업로드합니다.'
-            logger.info(f"status: {status}")
-            st.info(status)
+        file_key = f"{uploaded_file.name}_{uploaded_file.size}"
 
-        file_name = uploaded_file.name
-        logger.info(f"uploading... file_name: {file_name}")
-        file_url = chat.upload_to_s3(uploaded_file.getvalue(), file_name)
-        logger.info(f"file_url: {file_url}")
+        if file_key in st.session_state.processed_files:
+            logger.info(f"already processed, skip sync: {file_key}")
+            cached_body = st.session_state.processed_files[file_key]
+            if cached_body:
+                st.success(f"'{uploaded_file.name}' 은(는) 이미 동기화되었습니다.")
+                st.write(cached_body)
+        else:
+            chat.initiate()
 
-        import utils
-        utils.sync_data_source()  # sync uploaded files
-            
-        status = f'선택한 "{file_name}"의 내용을 요약합니다.'
-        if debugMode=='Enable':
-            logger.info(f"status: {status}")
-            st.info(status)
-    
-        msg = chat.get_summary_of_uploaded_file(file_name, st)
-        st.session_state.messages.append({"role": "assistant", "content": f"선택한 문서({file_name})를 요약하면 아래와 같습니다.\n\n{msg}"})    
-        logger.info(f"msg: {msg}")
+            if debugMode=='Enable':
+                status = '선택한 파일을 업로드합니다.'
+                logger.info(f"status: {status}")
+                st.info(status)
 
-        st.write(msg)
+            file_name = uploaded_file.name
+            logger.info(f"uploading... file_name: {file_name}")
+            file_url = chat.upload_to_s3(uploaded_file.getvalue(), file_name)
+            logger.info(f"file_url: {file_url}")
+
+            body = utils.sync_data_source()  # sync uploaded files
+
+            st.write(body)
+            st.session_state.processed_files[file_key] = body
 
     if uploaded_file and clear_button==False and mode == '이미지 분석':
         st.image(uploaded_file, caption="이미지 미리보기", use_container_width=True)
@@ -246,7 +340,6 @@ if clear_button or "messages" not in st.session_state:
     chat.clear_chat_history()
     st.rerun()    
 
-    
 # Always show the chat input
 if prompt := st.chat_input("메시지를 입력하세요."):
     with st.chat_message("user"):  # display user message in chat message container
@@ -285,43 +378,68 @@ if prompt := st.chat_input("메시지를 입력하세요."):
                 history_mode = "Enable"
 
             with st.status("thinking...", expanded=True, state="running") as status:
-                containers = {
-                    "tools": st.empty(),
-                    "status": st.empty(),
-                    "notification": [st.empty() for _ in range(500)]
-                }
+                notification_queue = NotificationQueue(container=status)
 
-                response, image_url = asyncio.run(chat.run_langgraph_agent(
+                skill_list = selected_skills if selected_skills else []
+                logger.info(f"skill_list: {skill_list}")
+
+                response, artifacts = asyncio.run(langgraph_agent.run_langgraph_agent(
                     query=prompt, 
                     mcp_servers=mcp_servers, 
+                    skill_list=skill_list,
                     history_mode=history_mode, 
-                    containers=containers))
+                    notification_queue=notification_queue))
 
             st.session_state.messages.append({
                 "role": "assistant", 
                 "content": response,
-                "images": image_url if image_url else []
+                "artifacts": artifacts if artifacts else []
             })
 
-            for url in image_url:
+            for url in artifacts:
                 logger.info(f"url: {url}")
                 file_name = url[url.rfind('/')+1:]
                 st.image(url, caption=file_name, use_container_width=True)
+
+        elif mode == '번역하기':
+            response = chat.translate_text(prompt)
+            st.write(response)
+
+            st.session_state.messages.append({"role": "assistant", "content": response})
                 
-        elif mode == "이미지 분석":
-            if uploaded_file is None or uploaded_file == "":
-                st.error("파일을 먼저 업로드하세요.")
-                st.stop()
+        else:
+            with st.status("thinking...", expanded=True, state="running") as status:
+                summary = chat.summarize_image(file_bytes, prompt, st)
+                st.write(summary)
 
-            else:
-                if modelName == "Claude 3.5 Haiku":
-                    st.error("Claude 3.5 Haiku은 이미지를 지원하지 않습니다. 다른 모델을 선택해주세요.")
+                artifacts_dir = langgraph_agent.ARTIFACTS_DIR
+                os.makedirs(artifacts_dir, exist_ok=True)
+                artifact_name = f"image_summary_{uuid.uuid4().hex}.md"
+                artifact_path = os.path.join(artifacts_dir, artifact_name)
+                md_body = summary if isinstance(summary, str) else str(summary)
+                with open(artifact_path, "w", encoding="utf-8") as f:
+                    f.write(md_body)
+
+                artifact_url = chat.upload_to_s3(md_body.encode("utf-8"), artifact_name)
+                if artifact_url:
+                    st.markdown(
+                        f"마크다운 artifact가 저장되었습니다. "
+                        f"[S3 링크]({artifact_url}) · 로컬: `{artifact_path}`"
+                    )
+                    assistant_content = (
+                        f"{md_body}\n\n---\n\n"
+                        f"[이미지 분석 요약 (markdown artifact)]({artifact_url})"
+                    )
                 else:
-                    with st.status("thinking...", expanded=True, state="running") as status:
-                        summary = chat.summarize_image(file_bytes, prompt, st)
-                        st.write(summary)
+                    st.warning(
+                        f"S3 업로드에 실패했거나 버킷/공유 URL이 설정되지 않았습니다. "
+                        f"로컬 artifact: `{artifact_path}`"
+                    )
+                    assistant_content = md_body
 
-                        st.session_state.messages.append({"role": "assistant", "content": summary})
+                chat.save_chat_history("이미지를 내용을 분석합니다.", assistant_content)
+
+                st.session_state.messages.append({"role": "assistant", "content": assistant_content})
 
 def main():
     """Entry point for the application."""
