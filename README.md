@@ -13,6 +13,86 @@ Amazon Bedrock Data Automation(BDA)은 문서, 이미지, 영상, 오디오 등 
 
 Amazon Bedrock Knowledge Bases의 데이터 소스 수집(Ingestion) 단계에서 BDA를 파서(Parser)로 지정하면, PDF, 이미지, 오디오, 비디오 등 멀티모달 콘텐츠를 텍스트 표현으로 변환하거나 멀티모달 임베딩을 위한 원본 파일로 저장하여 RAG(Retrieval Augmented Generation) 기반 질의응답 애플리케이션의 품질을 크게 향상시킬 수 있습니다.
 
+
+### Operation Architecture
+
+```mermaid
+flowchart TB
+  subgraph UI["Streamlit (app.py)"]
+    M[모드 선택]
+    SKUI[Skill / MCP 선택]
+  end
+
+  subgraph LLM["Amazon Bedrock"]
+    BR[Bedrock Runtime]
+  end
+
+  subgraph Chat["chat.py"]
+    GC[get_chat / ChatBedrock]
+    RET[retrieve]
+    RAG[get_rag_prompt]
+  end
+
+  subgraph Skills["Agent Skills (skill.py)"]
+    SRC["skills/*/SKILL.md"]
+    BSP[build_skill_prompt]
+    GSI[get_skill_instructions]
+  end
+
+  subgraph LangGraphStack["LangGraph Agent (langgraph_agent.py)"]
+    RLA[run_langgraph_agent]
+    SG[StateGraph ReAct]
+    CM[call_model]
+    TN[ToolNode]
+    BT["Built-in: execute_code, bash, read_file, write_file, upload_file_to_s3, get_current_time"]
+    MCPC[MultiServerMCPClient]
+  end
+
+  subgraph MCPServers["MCP Servers (mcp_config.py)"]
+    KB[kb-retrieve]
+    AWS[aws_documentation]
+    WF[web_fetch]
+    TE[text_extraction]
+    UC[사용자 설정]
+  end
+
+  subgraph Storage["Artifacts / S3"]
+    ART[artifacts/]
+    S3[(S3)]
+  end
+
+  M -->|일상 대화 / 번역 / 이미지| GC
+  M -->|RAG| RET
+  M -->|Agent / Agent Chat| RLA
+  SKUI -->|skill_list| BSP
+
+  RET --> RAG
+  RAG --> GC
+  GC --> BR
+
+  RLA --> SG
+  SG --> CM
+  CM --> GC
+  SG --> TN
+  TN --> BT
+  TN --> MCPC
+  TN --> GSI
+  BSP -->|system_prompt| CM
+  GSI --> SRC
+  MCPC --> MCPServers
+  BT --> ART
+  BT --> S3
+```
+
+| 모드 | 모듈 | 설명 |
+|------|------|------|
+| 일상적인 대화 | `chat.general_conversation` | LangChain `ChatBedrock` + 대화 이력(`ConversationBufferMemory`) 스트리밍 |
+| RAG | `chat.run_rag_with_knowledge_base` | Bedrock Knowledge Base `retrieve` 검색 후 RAG 프롬프트 체인으로 답변 생성 |
+| **Agent** | `langgraph_agent.run_langgraph_agent` | LangGraph ReAct 루프 + Built-in 도구 + MCP + Skills (`history_mode=Disable`) |
+| **Agent (Chat)** | `langgraph_agent.run_langgraph_agent` | Agent와 동일하나 `checkpointer`로 대화 이력 유지 (`history_mode=Enable`) |
+| 이미지 분석 | `chat.summarize_image` | `ChatBedrock` 멀티모달 (이미지 + 텍스트) 분석 |
+| 번역하기 | `chat.translate_text` | `ChatBedrock`으로 한↔영 번역 |
+
 ### 파서 옵션 비교
 
 Knowledge Bases에서 사용할 수 있는 파서는 세 가지입니다.
