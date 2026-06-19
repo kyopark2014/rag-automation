@@ -71,7 +71,8 @@ with st.sidebar:
     
     # mcp selection    
     mcp_options = [
-        "RAG", 
+        "RAG",
+        "websearch",
         "aws_documentation", 
         "web_fetch",
         "text_extraction",
