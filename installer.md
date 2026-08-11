@@ -53,7 +53,7 @@ custom_header_value = f"{project_name}_12dab15e4s31"
 - **설정**: 
   - CORS 활성화 (GET, POST, PUT)
   - 퍼블릭 액세스 차단
-  - `docs/` 폴더 자동 생성
+  - `docs/{project_name}/` 폴더 자동 생성
 
 ### 2. IAM 역할
 
@@ -129,7 +129,7 @@ def create_s3_bucket() -> str:
     # 버킷 생성
     # CORS 설정 (GET, POST, PUT 허용)
     # 퍼블릭 액세스 차단
-    # docs/ 폴더 생성
+    # docs/{project_name}/ 폴더 생성
     return bucket_name
 ```
 

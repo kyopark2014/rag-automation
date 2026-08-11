@@ -149,17 +149,18 @@ def create_s3_bucket() -> str:
             VersioningConfiguration={"Status": "Suspended"}
         )
         
-        # Create docs folder
-        logger.debug("Creating docs folder")
+        # Create docs/{project_name}/ folder (data source inclusion prefix)
+        docs_prefix = f"docs/{project_name}/"
+        logger.debug("Creating %s folder", docs_prefix)
         try:
             s3_client.put_object(
                 Bucket=bucket_name,
-                Key="docs/",
+                Key=docs_prefix,
                 Body=b""
             )
-            logger.debug("docs folder created successfully")
+            logger.debug("%s folder created successfully", docs_prefix)
         except ClientError as e:
-            logger.warning(f"Failed to create docs folder: {e}")
+            logger.warning(f"Failed to create {docs_prefix} folder: {e}")
         
         logger.info(f"✓ S3 bucket created successfully: {bucket_name}")
         return bucket_name
@@ -167,18 +168,19 @@ def create_s3_bucket() -> str:
     except ClientError as e:
         if e.response["Error"]["Code"] in ["BucketAlreadyExists", "BucketAlreadyOwnedByYou"]:
             logger.warning(f"S3 bucket already exists: {bucket_name}")
-            # Create docs folder if bucket already exists
-            logger.debug("Creating docs folder in existing bucket")
+            # Create docs/{project_name}/ folder if bucket already exists
+            docs_prefix = f"docs/{project_name}/"
+            logger.debug("Creating %s folder in existing bucket", docs_prefix)
             try:
                 s3_client.put_object(
                     Bucket=bucket_name,
-                    Key="docs/",
+                    Key=docs_prefix,
                     Body=b""
                 )
-                logger.debug("docs folder created successfully")
+                logger.debug("%s folder created successfully", docs_prefix)
             except ClientError as folder_error:
                 if folder_error.response["Error"]["Code"] != "NoSuchBucket":
-                    logger.warning(f"Failed to create docs folder: {folder_error}")
+                    logger.warning(f"Failed to create {docs_prefix} folder: {folder_error}")
             return bucket_name
         logger.error(f"Failed to create S3 bucket: {e}")
         raise
@@ -892,17 +894,81 @@ def ensure_data_source_with_bda_parser(
     knowledge_base_id: str,
     s3_bucket_name: str,
 ) -> str:
-    """Create BDA data source when missing; reuse existing data source by bucket name."""
+    """Create/update BDA data source scoped to docs/{project_name}/."""
+    expected_bucket_arn = f"arn:aws:s3:::{s3_bucket_name}"
+    expected_prefix = f"docs/{project_name}/"
+    vector_ingestion = {
+        "chunkingConfiguration": {
+            "chunkingStrategy": "HIERARCHICAL",
+            "hierarchicalChunkingConfiguration": {
+                "levelConfigurations": [
+                    {"maxTokens": 1500},
+                    {"maxTokens": 300},
+                ],
+                "overlapTokens": 60,
+            },
+        },
+        "parsingConfiguration": {
+            "parsingStrategy": "BEDROCK_DATA_AUTOMATION",
+            "bedrockDataAutomationConfiguration": {
+                "parsingModality": "MULTIMODAL",
+            },
+        },
+    }
+
     data_sources = bedrock_agent_client.list_data_sources(
         knowledgeBaseId=knowledge_base_id,
         maxResults=100,
     )
     for ds in data_sources.get("dataSourceSummaries", []):
-        if ds["name"] == s3_bucket_name:
-            logger.info(f"  Data source already exists: {ds['dataSourceId']}")
-            return ds["dataSourceId"]
+        if ds["name"] != s3_bucket_name:
+            continue
+        ds_id = ds["dataSourceId"]
+        details = bedrock_agent_client.get_data_source(
+            knowledgeBaseId=knowledge_base_id,
+            dataSourceId=ds_id,
+        )
+        s3_cfg = (
+            details["dataSource"]
+            .get("dataSourceConfiguration", {})
+            .get("s3Configuration")
+            or {}
+        )
+        bucket_arn = s3_cfg.get("bucketArn", "")
+        prefixes = s3_cfg.get("inclusionPrefixes") or []
+        if bucket_arn == expected_bucket_arn and expected_prefix in prefixes:
+            logger.info(
+                f"  Data source already exists with correct prefix "
+                f"({expected_prefix}): {ds_id}"
+            )
+            return ds_id
 
-    logger.info("  Creating data source with BDA parser...")
+        logger.warning(
+            f"  Updating data source {ds_id} inclusionPrefixes "
+            f"{prefixes} -> {[expected_prefix]}"
+        )
+        bedrock_agent_client.update_data_source(
+            knowledgeBaseId=knowledge_base_id,
+            dataSourceId=ds_id,
+            name=s3_bucket_name,
+            description=f"S3 data source with BDA parser: {s3_bucket_name}",
+            dataSourceConfiguration={
+                "type": "S3",
+                "s3Configuration": {
+                    "bucketArn": expected_bucket_arn,
+                    "inclusionPrefixes": [expected_prefix],
+                },
+            },
+            # Keep existing parsing; update_data_source requires config when
+            # changing S3 scope. Re-send BDA ingestion to avoid clearing it.
+            vectorIngestionConfiguration=vector_ingestion,
+        )
+        logger.info(f"  ✓ Data source updated: {ds_id}")
+        return ds_id
+
+    logger.info(
+        f"  Creating data source with BDA parser (prefix={expected_prefix})..."
+    )
     data_source_response = bedrock_agent_client.create_data_source(
         knowledgeBaseId=knowledge_base_id,
         name=s3_bucket_name,
@@ -911,28 +977,11 @@ def ensure_data_source_with_bda_parser(
         dataSourceConfiguration={
             "type": "S3",
             "s3Configuration": {
-                "bucketArn": f"arn:aws:s3:::{s3_bucket_name}",
-                "inclusionPrefixes": ["docs/"],
+                "bucketArn": expected_bucket_arn,
+                "inclusionPrefixes": [expected_prefix],
             },
         },
-        vectorIngestionConfiguration={
-            "chunkingConfiguration": {
-                "chunkingStrategy": "HIERARCHICAL",
-                "hierarchicalChunkingConfiguration": {
-                    "levelConfigurations": [
-                        {"maxTokens": 1500},
-                        {"maxTokens": 300},
-                    ],
-                    "overlapTokens": 60,
-                },
-            },
-            "parsingConfiguration": {
-                "parsingStrategy": "BEDROCK_DATA_AUTOMATION",
-                "bedrockDataAutomationConfiguration": {
-                    "parsingModality": "MULTIMODAL",
-                },
-            },
-        },
+        vectorIngestionConfiguration=vector_ingestion,
     )
     data_source_id = data_source_response["dataSource"]["dataSourceId"]
     logger.info(f"  ✓ Data source created: {data_source_id}")

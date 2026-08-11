@@ -1,0 +1,12 @@
+.DS_Store
+**/.DS_Store
+**/__pycache__/
+*.pyc
+config.json
+application/.session_storage/
+application/data/*.db
+application/data/*.db-shm
+application/data/*.db-wal
+application/web/node_modules/
+application/web/dist/
+*.tsbuildinfo

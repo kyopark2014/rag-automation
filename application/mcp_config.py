@@ -81,9 +81,9 @@ def get_agentcore_gateway_mcp_url(gateway_name: str, gateway_region: str) -> str
     return None
 
 def load_config(mcp_type):
-    if mcp_type == "RAG":
-        mcp_type = "kb-retrieve"    
-    
+    if mcp_type in ("knowledge base", "RAG"):
+        mcp_type = "kb-retrieve"
+
     if mcp_type == "kb-retrieve":
         return {
             "mcpServers": {
