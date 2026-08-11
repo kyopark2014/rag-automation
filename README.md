@@ -677,6 +677,57 @@ CloudFront 비활성화에 시간이 걸려 일부 리소스가 남을 수 있�
 | BDA 파서 인제스션 실패 | 파일이 [BDA 처리 제한](#파일-처리-제한-사항)(500 MB / 3,000페이지 등)을 초과하지 않는지, 비밀번호로 보호된 PDF가 아닌지 확인 |
 
 
+## 실행 결과
+
+채팅창에서 "+" 버튼을 선택해서 [Upload to RAG]를 선택후 파일을 업로드 합니다. "nova-ug.pdf"를 업로드하였다면, "nova-ug.pdf.metadata.json"이 자동 생성되었음을 아래와 같이 알 수 있습니다.
+
+<img width="416" height="187" alt="image" src="https://github.com/user-attachments/assets/54fc9354-f150-4896-9e83-29724f278fbd" />
+
+"nova-ug.pdf.metadata.json"의 내용은 아래와 같습니다. 해당 파일의 owner, team, 생성일에 대한 정보를 가지고 있어서 검색시 filter로 활용될 수 있습니다.
+
+```java
+{
+  "metadataAttributes": {
+    "owner": {
+      "value": {
+        "type": "STRING_LIST",
+        "stringListValue": [
+          "user01"
+        ]
+      },
+      "includeForEmbedding": false
+    },
+    "team": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "mycompany"
+      },
+      "includeForEmbedding": false
+    },
+    "created_time": {
+      "value": {
+        "type": "NUMBER",
+        "numberValue": 1786371723
+      },
+      "includeForEmbedding": false
+    },
+    "is_confidential": {
+      "value": {
+        "type": "BOOLEAN",
+        "booleanValue": false
+      },
+      "includeForEmbedding": false
+    }
+  }
+}
+```
+
+이제 "knowledge base로 nova 모델 사용법을 조사하세요."라고 입력하면 아래와 같은 결과를 얻을 수 있습니다.
+
+<img width="921" height="656" alt="image" src="https://github.com/user-attachments/assets/8064f041-a3b7-4aed-a7b4-d716d8a57e1f" />
+
+
+
 ## 참고 문서 링크
 
 | 문서 | URL |
