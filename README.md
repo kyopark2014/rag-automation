@@ -6,7 +6,7 @@ Amazon Bedrock Data Automation(BDA)은 문서, 이미지, 영상, 오디오 등 
 
 사용자는 FastAPI + React UI로 접속해 파일을 업로드하면 Amazon S3에 저장됩니다. Knowledge Base sync 시 BDA 파싱 후 chunking/embedding을 거쳐 OpenSearch Serverless에 인덱싱되고, Agent 채팅에서는 MCP로 Knowledge Base를 조회합니다. Hybrid(vector/keyword) 검색을 지원하며 문서 추가·삭제가 용이합니다. 상세 구성은 [시스템 아키텍처](#시스템-아키텍처)를 참고하세요. 
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/1805c976-5bf2-45f5-86ea-32ee24160d05" />
+<img width="679" height="317" alt="image" src="https://github.com/user-attachments/assets/6b12d407-e28f-487f-b6ae-77b7cf02bd36" />
 
 ## 목차
 
