@@ -95,17 +95,6 @@ flowchart TB
   BT --> S3
 ```
 
-### 동작 모드
-
-| 모드 | 모듈 | 설명 |
-|------|------|------|
-| 일상적인 대화 | `chat.general_conversation` | LangChain `ChatBedrock` + 대화 이력(`ConversationBufferMemory`) 스트리밍 |
-| RAG | `chat.run_rag_with_knowledge_base` | Bedrock Knowledge Base `retrieve` 검색 후 RAG 프롬프트 체인으로 답변 생성 |
-| **Agent** | `langgraph_agent.run_langgraph_agent` | LangGraph ReAct 루프 + Built-in 도구 + MCP + Skills (`history_mode=Disable`) |
-| **Agent (Chat)** | `langgraph_agent.run_langgraph_agent` | Agent와 동일하나 `checkpointer`로 대화 이력 유지 (`history_mode=Enable`) |
-| 이미지 분석 | `chat.summarize_image` | `ChatBedrock` 멀티모달 (이미지 + 텍스트) 분석 |
-| 번역하기 | `chat.translate_text` | `ChatBedrock`으로 한↔영 번역 |
-
 ## 프로젝트 구조
 
 본 프로젝트는 크게 **AWS 인프라 자동화 스크립트**(루트 레벨)와 **FastAPI + React 기반 RAG Agent 애플리케이션**(`application/`)으로 구성되어 있습니다.
@@ -143,10 +132,8 @@ rag-automation/
 |------|------|
 | `installer.py` | S3, IAM, Secrets Manager, OpenSearch Serverless, VPC, ALB, CloudFront, EC2, Bedrock Knowledge Base를 순서대로 생성합니다. BDA 파서가 적용된 Knowledge Base를 자동으로 구성하고, 결과를 `application/config.json`에 기록합니다. 자세한 내용은 `installer.md` 참조. |
 | `uninstaller.py` | `installer.py`가 만든 모든 AWS 리소스를 의존성 역순으로 안전하게 삭제합니다. |
-| `add_content.py` | 로컬 콘텐츠를 S3 데이터 소스 버킷에 업로드한 뒤, Knowledge Base 데이터 소스에 대해 `StartIngestionJob`을 호출하여 BDA 파서로 재색인합니다. |
 | `requirements.txt` | `fastapi`, `uvicorn`, `boto3`, `langchain_aws`, `langgraph`, `mcp`, `langchain-mcp-adapters` 등 애플리케이션 실행에 필요한 Python 패키지를 정의합니다. |
 | `run_local.sh` | React 프론트 빌드 후 `uvicorn application.server:app`를 포트 8501에서 기동합니다. |
-| `Dockerfile` | Node/Python 이미지로 프론트를 빌드하고 FastAPI를 서빙합니다. |
 
 ### `application/` 디렉터리 구성요소
 
@@ -167,8 +154,8 @@ rag-automation/
 ### 실행 흐름 요약
 
 1. **인프라 프로비저닝** — `python installer.py` 실행 시 BDA 파서가 적용된 Knowledge Base와 EC2/ALB/CloudFront 스택이 생성되고 `application/config.json`이 자동으로 채워집니다.
-2. **콘텐츠 적재** — `python add_content.py` 로 로컬 파일을 S3에 업로드하고 BDA 기반 인제스션 잡을 트리거합니다.
-3. **애플리케이션 실행** — `uvicorn application.server:app --port 8501` (또는 `./run_local.sh`)로 FastAPI + React UI를 기동하며, CloudFront 도메인을 통해 외부에서 접속합니다.
+2. **콘텐츠 적재** — Web UI에서 로컬 파일을 선택하여, S3에 업로드하고 BDA 기반 인제스션 잡을 트리거합니다.
+3. **애플리케이션 실행** — `uvicorn application.server:app --port 8501` (또는 `./run_local.sh`)로 FastAPI + React UI를 기동합니다.
 4. **질의 처리** — React UI에서 Agent 채팅을 보내면 `/api/tasks/{id}/chat` SSE → `chat.run_agent` → `langgraph_agent`로 Skill/MCP(RAG 포함) 도구를 호출합니다.
 
 ## Amazon Bedrock Data Automation
@@ -228,6 +215,8 @@ Amazon Bedrock Knowledge Bases의 데이터 소스 수집(Ingestion) 단계에�
 - **복합 문서 검색:** PDF 내 도표, 차트, 표, 이미지가 포함된 문서의 시맨틱 검색
 
 > **참고:** Standalone BDA 호출은 비동기·S3 결과 저장이 기본이며, 페이지/항목 수 기준 과금입니다. Knowledge Bases 파서로 쓸 때의 옵션 비교·제한·IAM·스토리지 설정은 [Knowledge Bases에서 BDA 파서 구성](#knowledge-bases에서-bda-파서-구성)을 참고하세요.
+
+
 
 ## Knowledge Bases에서 BDA 파서 구성
 
@@ -404,14 +393,14 @@ BDA 파서는 두 가지 임베딩 모델 접근 방식과 함께 사용할 수 
 
 #### 텍스트 임베딩 + BDA 파서
 
-- Titan Text Embeddings v2 등 텍스트 임베딩 모델과 함께 사용
-- BDA가 멀티모달 콘텐츠를 텍스트로 변환하여 저장
-- 텍스트 기반 검색만 가능하나, 멀티모달 파싱 결과가 검색에 활용됨
+- Titan Text Embeddings v2 등 텍스트 임베딩 모델과 함께 사용합니다.
+- BDA가 멀티모달 콘텐츠를 텍스트로 변환하여 저장합니다.
+- 텍스트 기반 검색만 가능하나, 멀티모달 파싱 결과가 검색에 활용합니다.
 
 #### Nova 멀티모달 임베딩 + BDA 파서
 
-- BDA 파싱이 먼저 수행된 후 Nova 멀티모달 임베딩이 적용됨
-- 이 경우 Nova가 이미지/오디오/비디오에 대한 네이티브 멀티모달 임베딩을 생성하지 않고, BDA의 텍스트 변환 결과를 사용함
+- BDA 파싱이 먼저 수행된 후 Nova 멀티모달 임베딩이 적용됩니다.
+- 이 경우 Nova가 이미지/오디오/비디오에 대한 네이티브 멀티모달 임베딩을 생성하지 않고, BDA의 텍스트 변환 결과를 사용합니다.
 
 #### 임베딩 모델 선택 가이드
 
@@ -437,9 +426,6 @@ BDA 파서는 두 가지 임베딩 모델 접근 방식과 함께 사용할 수 
 - **동일 버킷 사용 시:** 데이터 소스에 포함 접두사(inclusion prefix)를 반드시 지정하여 추출된 미디어 파일이 재수집되지 않도록 해야 합니다.
 - **`aws/` 접두사 사용 금지:** 동일 버킷 사용 시, `aws/`로 시작하는 포함 접두사는 사용할 수 없습니다. 해당 경로는 추출된 미디어 저장용으로 예약되어 있습니다.
 
-#### S3 라이프사이클 정책 권장
-
-Nova 멀티모달 임베딩 사용 시, Amazon Bedrock은 처리 완료 후 임시 데이터 삭제를 시도합니다. 임시 데이터 경로에 S3 라이프사이클 정책을 적용하여 정상적인 정리가 이루어지도록 설정할 것을 권장합니다.
 
 ### Cross-Region Inference (CRIS) 필수 요건
 
@@ -512,11 +498,7 @@ BDA를 Knowledge Bases의 파서로 사용하려면 아래 IAM 권한이 필요�
 }
 ```
 
-#### 고객 관리형 KMS 키 사용 시
 
-KMS 키 작업 및 그랜트 생성 권한을 추가로 구성해야 합니다.
-
-> **참고:** AWS Management Console에서 Knowledge Base를 생성하는 경우, Amazon Bedrock Knowledge Bases가 필요한 권한을 자동으로 구성합니다.
 
 ## Metadata Filtering (OpenSearch + BDA)
 
@@ -589,6 +571,10 @@ retrievalConfiguration={
 - **owner 필터**: `langgraph_agent.create_agent()`가 RAG MCP(`kb-retrieve`)에 `RAG_USER_ID`를 주입하고, retrieve는 해당 사용자 문서만 반환합니다.
 - **페이지 번호**: OpenSearch + PDF에서 KB가 `x-amz-bedrock-kb-document-page-number`를 부여하면 참조에 1-based page로 표시합니다.
 
+
+
+
+
 ## 설치 및 실행
 
 여기서는 [installer.py](./installer.py) 하나로 RAG 시스템 구동에 필요한 AWS 인프라(S3, OpenSearch Serverless, Bedrock Knowledge Base, VPC, ALB, CloudFront, EC2)를 일괄 배포하고, 애플리케이션은 FastAPI(`uvicorn application.server:app`, 포트 8501)로 기동하도록 설계되어 있습니다.
@@ -617,9 +603,6 @@ pip install -r requirements.txt
 
 ```bash
 aws configure                      # Access Key 방식
-
-aws sso login --profile <profile>  # SSO 사용 시
-export AWS_PROFILE=<profile>
 ```
 
 기본 리전 및 프로젝트명은 `installer.py` 상단에서 수정할 수 있습니다.
@@ -693,6 +676,9 @@ python uninstaller.py --yes      # 프롬프트 없이 즉시 삭제
 
 CloudFront 비활성화에 시간이 걸려 일부 리소스가 남을 수 있으며, 이 경우 안내 메시지에 따라 잠시 후 다시 실행하면 됩니다.
 
+
+
+
 ## 문제 해결
 
 | 증상 | 확인 사항 |
@@ -702,6 +688,10 @@ CloudFront 비활성화에 시간이 걸려 일부 리소스가 남을 수 있�
 | CloudFront 도메인 502/503 | 배포 직후 15~20분 활성화 대기, EC2 인스턴스 상태 및 ALB 타겟 그룹 헬스 확인 (포트 8501) |
 | `add_content.py` 실행 시 config 로드 실패 | `python installer.py`로 인프라 배포가 정상 완료되어 `application/config.json`이 생성되었는지 확인 |
 | BDA 파서 인제스션 실패 | 파일이 [BDA 처리 제한](#파일-처리-제한-사항)(500 MB / 3,000페이지 등)을 초과하지 않는지, 비밀번호로 보호된 PDF가 아닌지 확인 |
+
+
+
+
 
 ## 실행 결과
 
