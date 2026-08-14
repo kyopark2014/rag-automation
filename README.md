@@ -14,7 +14,7 @@ Amazon Bedrock Data Automation(BDA)은 문서, 이미지, 영상, 오디오 등 
 2. [시스템 아키텍처](#시스템-아키텍처) — 구성도, 동작 모드
 3. [프로젝트 구조](#프로젝트-구조)
 4. [Amazon Bedrock Data Automation](#amazon-bedrock-data-automation) — 개념, 모달리티, 활용 사례
-5. [Knowledge Bases에서 BDA 파서 구성](#knowledge-bases에서-bda-파서-구성) — 파서 비교, API, IAM, 임베딩
+5. [Knowledge Bases에서 BDA 파서 구성](#knowledge-bases에서-bda-파서-구성) — 파서 비교, API, IAM, 임베딩, 비용
 6. [Metadata Filtering](#metadata-filtering-opensearch--bda)
 7. [설치 및 실행](#설치-및-실행) — 배포부터 로컬 실행·정리까지
 8. [문제 해결](#문제-해결)
@@ -498,7 +498,68 @@ BDA를 Knowledge Bases의 파서로 사용하려면 아래 IAM 권한이 필요�
 }
 ```
 
+### BDA 비용 예측
 
+BDA는 토큰이 아니라 **처리량(페이지·이미지·분)** 기준으로 과금됩니다. 출력 방식은 Standard Output과 Custom Output(Blueprint) 두 가지이며, Knowledge Bases 파서로 쓸 때는 **Standard Output**만 적용됩니다.
+
+- 요금: [Amazon Bedrock Pricing — Data Automation](https://aws.amazon.com/bedrock/pricing/)
+- 파서 선택·과금 범위: [Parsing options for your data source](https://docs.aws.amazon.com/bedrock/latest/userguide/kb-advanced-parsing.html)
+- 출력 방식: [How Bedrock Data Automation works](https://docs.aws.amazon.com/bedrock/latest/userguide/bda-how-it-works.html)
+
+> **이 프로젝트:** Knowledge Base 파서가 `BEDROCK_DATA_AUTOMATION`이므로 인제스션마다 Standard Output 요금이 발생합니다. 기본 파서(텍스트만)는 파싱 요금이 없고, 파운데이션 모델 파서는 입·출력 토큰 과금입니다. 단가는 리전·시점에 따라 달라질 수 있으니 배포 전 공식 요금 페이지를 확인하세요. 아래 수치는 AWS 요금 페이지(US 리전, 2026-08 조회) 기준입니다.
+
+#### 단가 (Bedrock Data Automation inference)
+
+| 모달리티 | 과금 단위 | Standard Output | Custom Output (1–30 fields) |
+|----------|-----------|-----------------|-----------------------------|
+| 문서 | 페이지 | $0.010 | $0.040 |
+| 이미지 | 이미지 | $0.003 | $0.005 |
+| 오디오 | 분 | $0.006 | $0.009 |
+| 비디오 | 분 | $0.050 | $0.084 |
+
+부가 요금:
+
+- **30 fields 초과:** Custom Output Blueprint가 30개를 넘으면 초과 필드당 **$0.0005 / 단위**(페이지·이미지·오디오)가 추가됩니다. 예: 문서 Blueprint 40 fields → $0.040 + (10 × $0.0005) = **$0.045 / 페이지**.
+- **Custom Output에는 Standard Output이 포함**됩니다. 같은 파일에 대해 두 요금을 따로 내지 않습니다.
+- **이미지 동기(Sync) 처리**도 비동기와 동일합니다 ($0.003 Standard / $0.005 Custom, 초과 필드 $0.0005).
+- **Blueprint prompt optimization:** 최적화에 넣은 예시 문서 페이지당 $0.010. 이후 런타임 추론은 일반 Standard Output($0.010/페이지)이며, 예시 페이지에 대한 추가 할증은 없습니다.
+- **Cross-Region Inference(CRIS):** BDA는 CRIS가 필수이지만 **추가 요금은 없습니다.** 데이터는 소스 리전에만 저장됩니다.
+
+#### Knowledge Bases 파서로 쓸 때
+
+AWS 요금 페이지 기준, Knowledge Bases와 BDA 통합은 **standardized output(Standard Output)** 을 제공·과금합니다. 이 저장소의 인제스션 비용은 대략 다음과 같습니다.
+
+| 입력 | 계산 | BDA 파싱 비용 |
+|------|------|----------------|
+| 문서 1,000페이지 | 1,000 × $0.010 | **$10** |
+| 문서 100페이지 | 100 × $0.010 | **$1** |
+| 이미지 1,000장 | 1,000 × $0.003 | **$3** |
+| 오디오 60분 | 60 × $0.006 | **$0.36** |
+| 비디오 60분 | 60 × $0.050 | **$3** |
+
+공식 예시(Pricing example 3): Knowledge Base에 BDA 파서를 지정하고 1,000페이지 문서를 인제스트하면 Standard Output $0.010/페이지 × 1,000 = **$10**. 같은 분량을 파운데이션 모델 파서로 처리할 때 AWS는 표 30%·도표 30%인 문서를 기준으로 약 2,900 input / 750 output 토큰을 예시로 듭니다. 실제 토큰 수는 콘텐츠에 따라 달라지므로 자체 데이터로 측정하는 것이 정확합니다.
+
+> **중요:** BDA(또는 파운데이션 모델)를 파서로 선택하면 **텍스트만 있는 PDF를 포함해** 해당 데이터 소스의 모든 PDF에 그 파서가 적용되며, 기본 파서로 우회되지 않습니다. 텍스트 PDF도 페이지당 BDA 요금이 발생합니다.
+
+#### 인제스션 외 비용 (BDA와 별도)
+
+BDA 파싱 요금 외에 RAG 파이프라인에서 추가로 발생하는 항목입니다.
+
+| 항목 | 과금 시점 | 비고 |
+|------|-----------|------|
+| 임베딩 모델 | 청크 인덱싱 | Titan / Nova 등 모델의 토큰(또는 해당 모델) 요금 |
+| OpenSearch Serverless | 인덱스 저장·검색 | OCU·스토리지 |
+| S3 | 원본·멀티모달 파생물 저장 | 원본 버킷 + 멀티모달 스토리지 버킷 |
+| Retrieve / Agent 추론 | 질의 시 | Knowledge Base 검색 + Claude 등 FM 토큰 |
+| 재인제스션 | 파일 재동기화 | **페이지/이미지/분을 다시 처리하므로 BDA 요금이 다시 발생** |
+
+#### 비용 예측 시 참고
+
+1. **페이지 수 ≈ PDF 페이지 수.** DOCX는 내부적으로 PDF로 변환된 뒤 페이지 단위로 과금됩니다.
+2. **재업로드·재동기화는 재과금.** 동일 파일이라도 인제스션 잡을 다시 돌리면 BDA를 다시 호출합니다.
+3. **텍스트 전용 코퍼스는 기본 파서**를 쓰는 것이 저렴합니다. 도표·차트·표·이미지가 있는 문서만 BDA 데이터 소스로 분리하세요.
+4. **이 RAG 앱은 Custom Output(Blueprint)이 필요 없습니다.** Custom은 IDP처럼 필드 추출이 필요할 때 사용하며, 페이지당 약 4배입니다.
+5. 최신 단가·리전별 차이는 [Amazon Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/)과 [AWS Pricing Calculator](https://calculator.aws/#/createCalculator/Bedrock)에서 확인하세요.
 
 ## Metadata Filtering (OpenSearch + BDA)
 
@@ -746,6 +807,7 @@ CloudFront 비활성화에 시간이 걸려 일부 리소스가 남을 수 있�
 
 | 문서 | URL |
 |------|-----|
+| Amazon Bedrock Pricing (Data Automation) | https://aws.amazon.com/bedrock/pricing/ |
 | Parsing options for your data source | https://docs.aws.amazon.com/bedrock/latest/userguide/kb-advanced-parsing.html |
 | What is Bedrock Data Automation | https://docs.aws.amazon.com/bedrock/latest/userguide/bda.html |
 | How Bedrock Data Automation works | https://docs.aws.amazon.com/bedrock/latest/userguide/bda-how-it-works.html |
